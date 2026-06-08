@@ -97,9 +97,12 @@
         return true;
     }
 
-    function monToShowdown(mon) {
+    function monToShowdown(mon, label) {
         var name = speciesName(mon.species), held = itemName(mon.heldItem), ability = getAbility(mon);
-        var out = name + (held ? " @ " + held : "") + "\n";
+        // Give each savefile mon a unique set label so duplicate species do not overwrite each other
+        // and each one appears separately in Sylmar's box UI.
+        var header = label ? (label + " (" + name + ")") : name;
+        var out = header + (held ? " @ " + held : "") + "\n";
         if (ability) out += "Ability: " + ability + "\n";
         out += "Level: " + calcLevel(mon.experience, mon.species) + "\n";
         out += getNature(mon) + " Nature\n";
@@ -141,6 +144,30 @@
         return {off: start, mons: mons, score: score};
     }
 
+    function readParty(saveBlock) {
+        // Run & Bun is Emerald-based. In Gen 3 section 0, party count is at 0x234
+        // and the six 100-byte party Pokémon records start at 0x238. The first
+        // 80 bytes of each party record are the normal encrypted BoxPokemon data.
+        var candidates = [
+            {count: 0x234, start: 0x238},
+            {count: 0x34, start: 0x38} // fallback for unusual raw layouts
+        ];
+        var best = {off: 0, mons: [], score: 0};
+        for (var c = 0; c < candidates.length; c++) {
+            var countOff = candidates[c].count, start = candidates[c].start;
+            if (countOff >= saveBlock.length) continue;
+            var count = saveBlock[countOff];
+            if (count < 1 || count > 6 || start + count * 100 > saveBlock.length) continue;
+            var mons = [], score = 0;
+            for (var i = 0; i < count; i++) {
+                var mon = readBoxMon(saveBlock, start + i * 100);
+                if (isValidMon(mon)) { score++; mons.push(mon); }
+            }
+            if (score > best.score) best = {off: start, mons: mons, score: score};
+        }
+        return best;
+    }
+
     function findBestBox(saveBlock) {
         var DATA = 3968;
         var candidates = [
@@ -167,13 +194,24 @@
     function importSavBytes(buf) {
         var bytes = new Uint8Array(buf);
         var saveBlock = reconstructSave(bytes);
+        var party = readParty(saveBlock);
         var best = findBestBox(saveBlock);
-        if (!best.score) throw new Error("No valid boxed Pokémon were found in this .sav file.");
-        var text = best.mons.map(monToShowdown).join("");
+        if (!party.score && !best.score) throw new Error("No valid party or boxed Pokémon were found in this .sav file.");
+
+        var text = "";
+        party.mons.forEach(function (mon, i) {
+            text += monToShowdown(mon, "Party " + (i + 1));
+        });
+        best.mons.forEach(function (mon, i) {
+            var boxNo = Math.floor(i / 30) + 1;
+            var slotNo = (i % 30) + 1;
+            text += monToShowdown(mon, "Box " + boxNo + "-" + slotNo);
+        });
+
         $("textarea.import-team-text").val(text);
         $(".import-name-text").val("Save Import");
         addSets(text, "Save Import");
-        return best.score;
+        return {party: party.score, boxed: best.score, total: party.score + best.score};
     }
 
     function initSavImport() {
@@ -195,7 +233,7 @@
             reader.onload = function () {
                 try {
                     var count = importSavBytes(reader.result);
-                    $("#sav-import-status").text("Imported " + count + " boxed Pokémon.");
+                    $("#sav-import-status").text("Imported " + count.party + " party + " + count.boxed + " boxed Pokémon.");
                 } catch (e) {
                     $("#sav-import-status").text("");
                     alert(e.message || e);
