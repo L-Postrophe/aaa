@@ -116,6 +116,46 @@
         return out + "\n";
     }
 
+
+    function getSaveSlotInfo(bytes, start) {
+        var SECTOR = 4096, SIG = 0x08012025;
+        var sectors = {}, bestIdx = -1;
+        for (var off = start; off + SECTOR <= bytes.length && off < start + 14 * SECTOR; off += SECTOR) {
+            var id = u16(bytes, off + 0xFF4), sig = u32(bytes, off + 0xFF8), idx = u32(bytes, off + 0xFFC);
+            if (sig === SIG && id < 14) {
+                sectors[id] = {off: off, idx: idx};
+                if (idx > bestIdx) bestIdx = idx;
+            }
+        }
+        return {idx: bestIdx, sectors: sectors, ok: sectors[0] && sectors[5]};
+    }
+
+    function getRecentSaveSlot(bytes) {
+        // Match ForwardFeed's layout: Emerald save has two 14-sector blocks,
+        // the second beginning at 57344. Use the newer block's absolute sector offsets.
+        var a = getSaveSlotInfo(bytes, 0);
+        var b = getSaveSlotInfo(bytes, 57344);
+        if (a.ok && b.ok) return a.idx > b.idx ? a : b;
+        if (a.ok) return a;
+        if (b.ok) return b;
+        return null;
+    }
+
+    function readPartyFromSlot(bytes, slot) {
+        if (!slot || !slot.sectors[0]) return {off: 0, mons: [], score: 0};
+        var base = slot.sectors[0].off;
+        // ForwardFeed reads party count from the Trainer Info section, then party starts at +568.
+        var count = bytes[base + 564];
+        var start = base + 568;
+        var mons = [], score = 0;
+        if (count < 1 || count > 6 || start + count * 100 > bytes.length) return {off: start, mons: [], score: 0};
+        for (var i = 0; i < count; i++) {
+            var mon = readBoxMon(bytes, start + i * 100);
+            if (isValidMon(mon)) { score++; mons.push(mon); }
+        }
+        return {off: start, mons: mons, score: score};
+    }
+
     function reconstructSave(bytes) {
         var SECTOR = 4096, DATA = 3968, SIG = 0x08012025;
         var bestById = {};
@@ -181,22 +221,23 @@
             var got = readMonsAt(saveBlock, candidates[c], 14 * 30);
             if (got.score > best.score) best = got;
         }
-        // fallback for unusual/raw save layouts, but only on 4-byte alignment to avoid false byte-shift matches
-        if (!best.score) {
-            for (var off = 0; off + 80 * 30 <= saveBlock.length; off += 4) {
-                var got2 = readMonsAt(saveBlock, off, 14 * 30);
-                if (got2.score > best.score) best = got2;
-            }
-        }
+        // Do not scan the whole save on the browser/mobile path. The old fallback could make
+        // phones appear stuck on "Reading save..." and could also find false offsets.
         return best;
     }
 
     function importSavBytes(buf) {
         var bytes = new Uint8Array(buf);
+        if (!bytes.length) throw new Error("That file is empty.");
+        if (bytes.length < 0x10000) throw new Error("That does not look like a full GBA .sav file.");
+        var slot = getRecentSaveSlot(bytes);
         var saveBlock = reconstructSave(bytes);
-        var party = readParty(saveBlock);
+        // Use ForwardFeed's absolute-sector party location first. The reconstructed
+        // block is kept as a fallback for nonstandard dumped saves.
+        var party = readPartyFromSlot(bytes, slot);
+        if (!party.score) party = readParty(saveBlock);
         var best = findBestBox(saveBlock);
-        if (!party.score && !best.score) throw new Error("No valid party or boxed Pokémon were found in this .sav file.");
+        if (!party.score && !best.score) throw new Error("No valid party or boxed Pokémon were found in this .sav file. Make sure you selected the battery save .sav, not a save state.");
 
         var text = "";
         party.mons.forEach(function (mon, i) {
@@ -230,14 +271,25 @@
             if (!file) return;
             var reader = new FileReader();
             $("#sav-import-status").text("Reading save...");
+            reader.onerror = function () {
+                $("#sav-import-status").text("");
+                alert("Could not read that save file.");
+                ev.target.value = "";
+            };
             reader.onload = function () {
-                try {
-                    var count = importSavBytes(reader.result);
-                    $("#sav-import-status").text("Imported " + count.party + " party + " + count.boxed + " boxed Pokémon.");
-                } catch (e) {
-                    $("#sav-import-status").text("");
-                    alert(e.message || e);
-                }
+                $("#sav-import-status").text("Decoding save...");
+                // Yield once so mobile browsers repaint the status before the synchronous import work.
+                setTimeout(function () {
+                    try {
+                        var count = importSavBytes(reader.result);
+                        $("#sav-import-status").text("Imported " + count.party + " party + " + count.boxed + " boxed Pokémon.");
+                    } catch (e) {
+                        $("#sav-import-status").text("");
+                        alert(e.message || e);
+                    } finally {
+                        ev.target.value = "";
+                    }
+                }, 0);
             };
             reader.readAsArrayBuffer(file);
         });
