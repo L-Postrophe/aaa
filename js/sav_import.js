@@ -181,19 +181,22 @@
             var got = readMonsAt(saveBlock, candidates[c], 14 * 30);
             if (got.score > best.score) best = got;
         }
-        // Do not scan the whole save on the browser/mobile path. The old fallback could make
-        // phones appear stuck on "Reading save..." and could also find false offsets.
+        // fallback for unusual/raw save layouts, but only on 4-byte alignment to avoid false byte-shift matches
+        if (!best.score) {
+            for (var off = 0; off + 80 * 30 <= saveBlock.length; off += 4) {
+                var got2 = readMonsAt(saveBlock, off, 14 * 30);
+                if (got2.score > best.score) best = got2;
+            }
+        }
         return best;
     }
 
     function importSavBytes(buf) {
         var bytes = new Uint8Array(buf);
-        if (!bytes.length) throw new Error("That file is empty.");
-        if (bytes.length < 0x10000) throw new Error("That does not look like a full GBA .sav file.");
         var saveBlock = reconstructSave(bytes);
         var party = readParty(saveBlock);
         var best = findBestBox(saveBlock);
-        if (!party.score && !best.score) throw new Error("No valid party or boxed Pokémon were found in this .sav file. Make sure you selected the battery save .sav, not a save state.");
+        if (!party.score && !best.score) throw new Error("No valid party or boxed Pokémon were found in this .sav file.");
 
         var text = "";
         party.mons.forEach(function (mon, i) {
@@ -227,25 +230,14 @@
             if (!file) return;
             var reader = new FileReader();
             $("#sav-import-status").text("Reading save...");
-            reader.onerror = function () {
-                $("#sav-import-status").text("");
-                alert("Could not read that save file.");
-                ev.target.value = "";
-            };
             reader.onload = function () {
-                $("#sav-import-status").text("Decoding save...");
-                // Yield once so mobile browsers repaint the status before the synchronous import work.
-                setTimeout(function () {
-                    try {
-                        var count = importSavBytes(reader.result);
-                        $("#sav-import-status").text("Imported " + count.party + " party + " + count.boxed + " boxed Pokémon.");
-                    } catch (e) {
-                        $("#sav-import-status").text("");
-                        alert(e.message || e);
-                    } finally {
-                        ev.target.value = "";
-                    }
-                }, 0);
+                try {
+                    var count = importSavBytes(reader.result);
+                    $("#sav-import-status").text("Imported " + count.party + " party + " + count.boxed + " boxed Pokémon.");
+                } catch (e) {
+                    $("#sav-import-status").text("");
+                    alert(e.message || e);
+                }
             };
             reader.readAsArrayBuffer(file);
         });
