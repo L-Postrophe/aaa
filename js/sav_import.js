@@ -78,12 +78,14 @@
             experience: ss[0][1] >>> 0,
             hiddenNature: (ss[0][2] >>> 16) & 0x1F,
             moves: [ss[1][0] & 0xFFFF, ss[1][0] >>> 16, ss[1][1] & 0xFFFF, ss[1][1] >>> 16],
-            hpIV: flags & 0x1F,
-            attackIV: (flags >>> 5) & 0x1F,
-            defenseIV: (flags >>> 10) & 0x1F,
-            speedIV: (flags >>> 15) & 0x1F,
-            spAttackIV: (flags >>> 20) & 0x1F,
-            spDefenseIV: (flags >>> 25) & 0x1F,
+            // Run & Bun stores IVs shifted one bit compared with vanilla Gen 3.
+            // This matches ForwardFeed's gen3_loadsave.js.
+            hpIV: (flags >>> 1) & 0x1F,
+            attackIV: (flags >>> 6) & 0x1F,
+            defenseIV: (flags >>> 11) & 0x1F,
+            speedIV: (flags >>> 16) & 0x1F,
+            spAttackIV: (flags >>> 21) & 0x1F,
+            spDefenseIV: (flags >>> 26) & 0x1F,
             altAbility: (ss[3][2] >>> 29) & 3
         };
         return mon;
@@ -104,7 +106,7 @@
         var header = label ? (label + " (" + name + ")") : name;
         var out = header + (held ? " @ " + held : "") + "\n";
         if (ability) out += "Ability: " + ability + "\n";
-        out += "Level: " + calcLevel(mon.experience, mon.species) + "\n";
+        out += "Level: " + (mon.level || calcLevel(mon.experience, mon.species)) + "\n";
         out += getNature(mon) + " Nature\n";
         out += "IVs: " + mon.hpIV + " HP / " + mon.attackIV + " Atk / " + mon.defenseIV + " Def / " + mon.spAttackIV + " SpA / " + mon.spDefenseIV + " SpD / " + mon.speedIV + " Spe\n";
         mon.moves.forEach(function (id) {
@@ -141,16 +143,23 @@
         return null;
     }
 
+    function readPartyMon(bytes, off) {
+        var mon = readBoxMon(bytes, off);
+        if (mon) mon.level = u8(bytes, off + 84);
+        return mon;
+    }
+
     function readPartyFromSlot(bytes, slot) {
-        if (!slot || !slot.sectors[0]) return {off: 0, mons: [], score: 0};
-        var base = slot.sectors[0].off;
-        // ForwardFeed reads party count from the Trainer Info section, then party starts at +568.
-        var count = bytes[base + 564];
+        // ForwardFeed uses sector id 1 (Trainer Info / Team+Item), not sector id 0.
+        // Party count is a 32-bit little-endian value at +564 and party data starts at +568.
+        if (!slot || !slot.sectors[1]) return {off: 0, mons: [], score: 0};
+        var base = slot.sectors[1].off;
+        var count = u32(bytes, base + 564);
         var start = base + 568;
         var mons = [], score = 0;
         if (count < 1 || count > 6 || start + count * 100 > bytes.length) return {off: start, mons: [], score: 0};
         for (var i = 0; i < count; i++) {
-            var mon = readBoxMon(bytes, start + i * 100);
+            var mon = readPartyMon(bytes, start + i * 100);
             if (isValidMon(mon)) { score++; mons.push(mon); }
         }
         return {off: start, mons: mons, score: score};
@@ -189,6 +198,7 @@
         // and the six 100-byte party Pokémon records start at 0x238. The first
         // 80 bytes of each party record are the normal encrypted BoxPokemon data.
         var candidates = [
+            {count: 3968 + 0x234, start: 3968 + 0x238}, // sector id 1 in reconstructed save
             {count: 0x234, start: 0x238},
             {count: 0x34, start: 0x38} // fallback for unusual raw layouts
         ];
@@ -196,11 +206,11 @@
         for (var c = 0; c < candidates.length; c++) {
             var countOff = candidates[c].count, start = candidates[c].start;
             if (countOff >= saveBlock.length) continue;
-            var count = saveBlock[countOff];
+            var count = u32(saveBlock, countOff);
             if (count < 1 || count > 6 || start + count * 100 > saveBlock.length) continue;
             var mons = [], score = 0;
             for (var i = 0; i < count; i++) {
-                var mon = readBoxMon(saveBlock, start + i * 100);
+                var mon = readPartyMon(saveBlock, start + i * 100);
                 if (isValidMon(mon)) { score++; mons.push(mon); }
             }
             if (score > best.score) best = {off: start, mons: mons, score: score};
