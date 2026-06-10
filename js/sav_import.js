@@ -78,14 +78,15 @@
             experience: ss[0][1] >>> 0,
             hiddenNature: (ss[0][2] >>> 16) & 0x1F,
             moves: [ss[1][0] & 0xFFFF, ss[1][0] >>> 16, ss[1][1] & 0xFFFF, ss[1][1] >>> 16],
-            // Run & Bun stores IVs shifted one bit compared with vanilla Gen 3.
-            // This matches ForwardFeed's gen3_loadsave.js.
-            hpIV: (flags >>> 1) & 0x1F,
-            attackIV: (flags >>> 6) & 0x1F,
-            defenseIV: (flags >>> 11) & 0x1F,
-            speedIV: (flags >>> 16) & 0x1F,
-            spAttackIV: (flags >>> 21) & 0x1F,
-            spDefenseIV: (flags >>> 26) & 0x1F,
+            // Run & Bun save IV flags are two bits later in the decrypted IV word for this build.
+            // Example checked: 12/19/6/18/3/16 was being read as 24/6/13/5/7/0
+            // with the previous one-bit offset, so decode one bit later.
+            hpIV: (flags >>> 2) & 0x1F,
+            attackIV: (flags >>> 7) & 0x1F,
+            defenseIV: (flags >>> 12) & 0x1F,
+            speedIV: (flags >>> 17) & 0x1F,
+            spAttackIV: (flags >>> 22) & 0x1F,
+            spDefenseIV: (flags >>> 27) & 0x1F,
             altAbility: (ss[3][2] >>> 29) & 3
         };
         return mon;
@@ -118,6 +119,54 @@
         return out + "\n";
     }
 
+
+
+    function directAddMonToBox(mon, label) {
+        var name = speciesName(mon.species);
+        if (!name || !window.calc || !calc.SPECIES || !calc.SPECIES[9] || !calc.SPECIES[9][name]) return false;
+        var base = $.extend ? $.extend(true, {}, calc.SPECIES[9][name]) : JSON.parse(JSON.stringify(calc.SPECIES[9][name]));
+        base.name = name;
+        base.nameProp = label || "Save Import";
+        base.item = itemName(mon.heldItem) || undefined;
+        base.ability = getAbility(mon) || undefined;
+        base.level = mon.level || calcLevel(mon.experience, mon.species);
+        base.nature = getNature(mon);
+        base.evs = {};
+        base.ivs = {
+            hp: mon.hpIV,
+            at: mon.attackIV,
+            df: mon.defenseIV,
+            sa: mon.spAttackIV,
+            sd: mon.spDefenseIV,
+            sp: mon.speedIV
+        };
+        base.moves = mon.moves.map(function (id) {
+            var mv = moveName(id);
+            if (mv === "Hidden Power") mv = "Hidden Power " + hiddenPowerType(mon);
+            return mv;
+        }).filter(Boolean);
+        base.isCustomSet = true;
+        if (typeof addToDex === "function") {
+            addToDex(base);
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    function directImportMons(partyMons, boxedMons) {
+        var added = 0;
+        partyMons.forEach(function (mon, i) {
+            if (directAddMonToBox(mon, "Party " + (i + 1))) added++;
+        });
+        boxedMons.forEach(function (mon, i) {
+            var boxNo = Math.floor(i / 30) + 1;
+            var slotNo = (i % 30) + 1;
+            if (directAddMonToBox(mon, "Box " + boxNo + "-" + slotNo)) added++;
+        });
+        if (added > 0) $(allPokemon("#importedSetsOptions")).css("display", "inline");
+        return added;
+    }
 
     function getSaveSlotInfo(bytes, start) {
         var SECTOR = 4096, SIG = 0x08012025;
@@ -261,7 +310,11 @@
 
         $("textarea.import-team-text").val(text);
         $(".import-name-text").val("Save Import");
-        addSets(text, "Save Import");
+        // Add directly to Sylmar's boxed/custom-set storage instead of routing through
+        // the text importer. The text parser can mangle partial/custom IV objects, so
+        // this preserves the exact IVs decoded from the save.
+        var directAdded = directImportMons(party.mons, best.mons);
+        if (!directAdded) addSets(text, "Save Import");
         return {party: party.score, boxed: best.score, total: party.score + best.score};
     }
 
