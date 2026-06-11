@@ -78,15 +78,16 @@
             experience: ss[0][1] >>> 0,
             hiddenNature: (ss[0][2] >>> 16) & 0x1F,
             moves: [ss[1][0] & 0xFFFF, ss[1][0] >>> 16, ss[1][1] & 0xFFFF, ss[1][1] >>> 16],
-            // Run & Bun save IV flags are two bits later in the decrypted IV word for this build.
-            // Example checked: 12/19/6/18/3/16 was being read as 24/6/13/5/7/0
-            // with the previous one-bit offset, so decode one bit later.
-            hpIV: (flags >>> 2) & 0x1F,
-            attackIV: (flags >>> 7) & 0x1F,
-            defenseIV: (flags >>> 12) & 0x1F,
-            speedIV: (flags >>> 17) & 0x1F,
-            spAttackIV: (flags >>> 22) & 0x1F,
-            spDefenseIV: (flags >>> 27) & 0x1F,
+            // Run & Bun stores IVs shifted one bit from vanilla Gen 3.
+            // The previous patch moved this two bits and produced values like
+            // 22/5/3/25/1/8 from a known 12/19/6/18/3/16 mon.
+            // Decode from bit 1, then every 5 bits, matching ForwardFeed's importer.
+            hpIV: (flags >>> 1) & 0x1F,
+            attackIV: (flags >>> 6) & 0x1F,
+            defenseIV: (flags >>> 11) & 0x1F,
+            speedIV: (flags >>> 16) & 0x1F,
+            spAttackIV: (flags >>> 21) & 0x1F,
+            spDefenseIV: (flags >>> 26) & 0x1F,
             altAbility: (ss[3][2] >>> 29) & 3
         };
         return mon;
